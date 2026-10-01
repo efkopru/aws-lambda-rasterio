@@ -1,3 +1,5 @@
-rasterio
-numpy
-boto3
+# Runtime dependencies bundled into the Lambda layer.
+# boto3/botocore are intentionally omitted: the Lambda Python runtime already
+# provides them, and bundling them adds ~25 MB to the unzipped layer.
+rasterio==1.4.4
+numpy>=2.0,<2.3
