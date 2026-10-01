@@ -17,6 +17,13 @@ case "$ARCH" in
   *) echo "Unsupported architecture '$ARCH' (use x86_64 or arm64)" >&2; exit 1 ;;
 esac
 
+# rasterio's wheels need glibc 2.28+, so only the Amazon Linux 2023 runtimes
+# (Python 3.12 and later) can load them.
+if ! printf '%s\n' "$PYTHON_VERSION" | grep -Eq '^3\.(1[2-9]|[2-9][0-9])$'; then
+  echo "Unsupported Python version '$PYTHON_VERSION' (use 3.12 or later)" >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAG="rasterio-layer:py${PYTHON_VERSION}-${ARCH}"
 OUT_DIR="$SCRIPT_DIR/dist"
