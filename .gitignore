@@ -6,3 +6,7 @@ rasterio-layer/layer.zip
 __pycache__/
 *.pyc
 .venv/
+
+# Sample imagery - kept locally, too large for git
+rasterio-layer/images/
+rasterio-layer/images_compressed/
