@@ -1,0 +1,39 @@
+name: Build layer
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.arch }} / Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12"]
+        arch: [x86_64, arm64]
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # build.sh builds the zip and runs smoke_test.py against it in a clean
+      # Lambda image, failing on import errors or Lambda size limits.
+      - name: Build and smoke-test
+        run: ./rasterio-layer/build.sh ${{ matrix.arch }} ${{ matrix.python }}
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: layer-${{ matrix.arch }}-py${{ matrix.python }}
+          path: rasterio-layer/dist/layer-${{ matrix.arch }}-py${{ matrix.python }}.zip
+          # Already deflate-compressed.
+          compression-level: 0
