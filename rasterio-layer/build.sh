@@ -5,7 +5,7 @@
 #   ./build.sh                 # x86_64, Python 3.12
 #   ./build.sh arm64 3.13
 #
-# Output: dist/layer-<arch>-py<version>.zip
+# Output: dist/layer-<arch>-py<version>.zip, verified by smoke_test.py
 set -euo pipefail
 
 ARCH="${1:-x86_64}"
@@ -16,6 +16,13 @@ case "$ARCH" in
   arm64)  PLATFORM="linux/arm64" ;;
   *) echo "Unsupported architecture '$ARCH' (use x86_64 or arm64)" >&2; exit 1 ;;
 esac
+
+# rasterio's wheels need glibc 2.28+, so only the Amazon Linux 2023 runtimes
+# (Python 3.12 and later) can load them.
+if ! printf '%s\n' "$PYTHON_VERSION" | grep -Eq '^3\.(1[2-9]|[2-9][0-9])$'; then
+  echo "Unsupported Python version '$PYTHON_VERSION' (use 3.12 or later)" >&2
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAG="rasterio-layer:py${PYTHON_VERSION}-${ARCH}"
@@ -32,6 +39,13 @@ docker build \
 
 docker run --rm --platform "$PLATFORM" -v "$OUT_DIR:/out" "$TAG"
 mv "$OUT_DIR/layer.zip" "$OUT_ZIP"
+
+# Verify the layer inside a clean Lambda image of the same runtime and arch.
+docker run --rm --platform "$PLATFORM" \
+  -v "$OUT_DIR:/dist:ro" -v "$SCRIPT_DIR/smoke_test.py:/smoke_test.py:ro" \
+  --entrypoint python3 \
+  "public.ecr.aws/lambda/python:$PYTHON_VERSION" \
+  /smoke_test.py "/dist/$(basename "$OUT_ZIP")"
 
 echo "Built $OUT_ZIP ($(du -h "$OUT_ZIP" | cut -f1))"
 echo

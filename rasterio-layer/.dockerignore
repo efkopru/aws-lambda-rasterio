@@ -1,0 +1,5 @@
+# Only these files are needed to build the layer; keeps local imagery and
+# build output out of the Docker build context.
+*
+!requirements.txt
+!package_layer.py
