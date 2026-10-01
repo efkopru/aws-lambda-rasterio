@@ -1,17 +1,24 @@
-# Use the official AWS Lambda Python 3.9 base image
-FROM public.ecr.aws/lambda/python:3.9
+# Builds an AWS Lambda layer containing rasterio (with its bundled GDAL) and numpy.
+#
+# Building on the official Lambda base image guarantees the wheels match the
+# Lambda runtime's Python version, glibc and CPU architecture.
+ARG PYTHON_VERSION=3.12
+FROM public.ecr.aws/lambda/python:${PYTHON_VERSION}
 
-# COPY the requirements file into the /var/task/ directory.
-# This is the working directory of the base Lambda image.
-COPY requirements.txt .
+COPY requirements.txt package_layer.py /tmp/
 
-# Create a directory for the layer's contents
-# The structure /opt/python is required by Lambda for layers
-RUN mkdir -p /opt/python
+# Lambda layers must place Python packages under python/ in the zip, which
+# Lambda mounts at /opt/python.
+#
+# The rasterio wheels link against the system libexpat, which the Lambda
+# runtime does not provide, so ship it in lib/ (Lambda puts /opt/lib on
+# LD_LIBRARY_PATH).
+RUN dnf install -y expat \
+    && mkdir -p /layer/lib \
+    && cp -L /usr/lib64/libexpat.so.1 /layer/lib/ \
+    && pip install --no-cache-dir --only-binary=:all: \
+        -r /tmp/requirements.txt -t /layer/python \
+    && python3 /tmp/package_layer.py /layer /layer.zip
 
-# Install the dependencies from requirements.txt into this directory
-# Using --target ensures they are packaged for the layer
-RUN pip install -r requirements.txt -t /opt/python
-
-# The command for the container is not important as we only need the files
-CMD ["/bin/sh"]
+# Running the container copies the finished zip into the mounted /out directory.
+ENTRYPOINT ["cp", "/layer.zip", "/out/layer.zip"]
