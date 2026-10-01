@@ -74,6 +74,18 @@ python rasterio-layer/process_images.py in/ out/ --mode jpeg --quality 85
 - `jpeg`: stretches each band to 8-bit and JPEG-compresses it. Much smaller,
   but the original values are lost, so use it only for previews.
 
+## Tests
+
+```bash
+cd rasterio-layer
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The unit tests cover `process_images.py` and `package_layer.py` using small
+generated GeoTIFFs, so they need no sample data or Docker. CI runs them
+alongside the layer build.
+
 ## Sample data
 
 The sample imagery is not stored in the repo. The script expects Landsat 9
