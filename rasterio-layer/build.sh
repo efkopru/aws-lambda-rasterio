@@ -5,7 +5,7 @@
 #   ./build.sh                 # x86_64, Python 3.12
 #   ./build.sh arm64 3.13
 #
-# Output: dist/layer-<arch>-py<version>.zip
+# Output: dist/layer-<arch>-py<version>.zip, verified by smoke_test.py
 set -euo pipefail
 
 ARCH="${1:-x86_64}"
@@ -32,6 +32,13 @@ docker build \
 
 docker run --rm --platform "$PLATFORM" -v "$OUT_DIR:/out" "$TAG"
 mv "$OUT_DIR/layer.zip" "$OUT_ZIP"
+
+# Verify the layer inside a clean Lambda image of the same runtime and arch.
+docker run --rm --platform "$PLATFORM" \
+  -v "$OUT_DIR:/dist:ro" -v "$SCRIPT_DIR/smoke_test.py:/smoke_test.py:ro" \
+  --entrypoint python3 \
+  "public.ecr.aws/lambda/python:$PYTHON_VERSION" \
+  /smoke_test.py "/dist/$(basename "$OUT_ZIP")"
 
 echo "Built $OUT_ZIP ($(du -h "$OUT_ZIP" | cut -f1))"
 echo
