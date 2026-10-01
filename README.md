@@ -15,8 +15,9 @@ cd rasterio-layer
 ./build.sh arm64 3.13     # Graviton, Python 3.13
 ```
 
-The Python version and architecture of the layer must match the function that
-uses it.
+The layer needs Python 3.12 or later (older Lambda runtimes use a glibc too
+old for the rasterio wheels). Its Python version and architecture must match
+the function that uses it.
 
 After building, `build.sh` runs `smoke_test.py` in a clean Lambda image. The
 test checks that rasterio can write and read a GeoTIFF and reproject

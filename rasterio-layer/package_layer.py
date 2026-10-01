@@ -44,7 +44,7 @@ def main(layer_dir, output_zip):
     removed = trim(python_dir)
     build_zip(layer_dir, output_zip)
 
-    unzipped = sum(f.stat().st_size for f in python_dir.rglob("*") if f.is_file())
+    unzipped = sum(f.stat().st_size for f in layer_dir.rglob("*") if f.is_file())
     print(f"Trimmed {removed / 1e6:.1f} MB")
     print(f"Unzipped: {unzipped / 1e6:.1f} MB, zipped: {output_zip.stat().st_size / 1e6:.1f} MB")
 

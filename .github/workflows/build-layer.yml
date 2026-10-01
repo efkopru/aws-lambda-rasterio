@@ -24,14 +24,14 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # build.sh builds the zip and runs smoke_test.py against it in a clean
       # Lambda image, failing on import errors or Lambda size limits.
       - name: Build and smoke-test
         run: ./rasterio-layer/build.sh ${{ matrix.arch }} ${{ matrix.python }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: layer-${{ matrix.arch }}-py${{ matrix.python }}
           path: rasterio-layer/dist/layer-${{ matrix.arch }}-py${{ matrix.python }}.zip
