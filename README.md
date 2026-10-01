@@ -4,6 +4,15 @@ An AWS Lambda layer that provides [rasterio](https://rasterio.readthedocs.io/)
 (with its bundled GDAL) and numpy, plus a helper script for compressing
 GeoTIFFs.
 
+## Clone
+
+Early history contains ~750 MB of build output and sample imagery that are no
+longer tracked. A shallow clone skips them:
+
+```bash
+git clone --depth 1 https://github.com/efkopru/aws-lambda-rasterio.git
+```
+
 ## Build the layer
 
 Requires Docker. The layer is built inside the official Lambda base image so
