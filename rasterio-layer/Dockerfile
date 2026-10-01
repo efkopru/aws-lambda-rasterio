@@ -9,7 +9,14 @@ COPY requirements.txt package_layer.py /tmp/
 
 # Lambda layers must place Python packages under python/ in the zip, which
 # Lambda mounts at /opt/python.
-RUN pip install --no-cache-dir --only-binary=:all: \
+#
+# The rasterio wheels link against the system libexpat, which the Lambda
+# runtime does not provide, so ship it in lib/ (Lambda puts /opt/lib on
+# LD_LIBRARY_PATH).
+RUN dnf install -y expat \
+    && mkdir -p /layer/lib \
+    && cp -L /usr/lib64/libexpat.so.1 /layer/lib/ \
+    && pip install --no-cache-dir --only-binary=:all: \
         -r /tmp/requirements.txt -t /layer/python \
     && python3 /tmp/package_layer.py /layer /layer.zip
 

@@ -8,6 +8,7 @@ architecture, so the bundled binaries are exercised for real:
         /work/rasterio-layer/smoke_test.py /work/rasterio-layer/dist/layer-x86_64-py3.12.zip
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -56,18 +57,21 @@ def main(zip_path):
         with tempfile.TemporaryDirectory() as tmp:
             zf.extractall(tmp)
             # -I -S keep the interpreter's own site-packages off sys.path, so
-            # only the layer's packages can satisfy the imports.
+            # only the layer's packages can satisfy the imports. Lambda puts the
+            # layer's lib/ on LD_LIBRARY_PATH (as /opt/lib); mirror that here.
+            env = dict(os.environ)
+            env["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None, [f"{tmp}/lib", env.get("LD_LIBRARY_PATH")]))
             result = subprocess.run(
                 [sys.executable, "-I", "-S", "-c", f"import sys; sys.path.insert(0, {tmp + '/python'!r})\n{CHECK}"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, env=env,
             )
 
     zipped = zip_path.stat().st_size
     print(f"Zipped:   {zipped / 1e6:.1f} MB")
     print(f"Unzipped: {unzipped / 1e6:.1f} MB")
 
-    if not all(name.startswith("python/") for name in names):
-        failures.append("every entry must live under python/ for Lambda to find it")
+    if not all(name.startswith(("python/", "lib/")) for name in names):
+        failures.append("every entry must live under python/ or lib/ for Lambda to find it")
     if unzipped > MAX_UNZIPPED_BYTES:
         failures.append(f"unzipped size exceeds Lambda's {MAX_UNZIPPED_BYTES // 2**20} MiB limit")
     if zipped > MAX_DIRECT_UPLOAD_BYTES:
