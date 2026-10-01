@@ -5,17 +5,20 @@
 ARG PYTHON_VERSION=3.12
 FROM public.ecr.aws/lambda/python:${PYTHON_VERSION}
 
-COPY requirements.txt /tmp/requirements.txt
+COPY requirements.txt package_layer.py /tmp/
 
 # Lambda layers must place Python packages under python/ in the zip, which
 # Lambda mounts at /opt/python.
-RUN pip install --no-cache-dir --only-binary=:all: \
+#
+# The rasterio wheels link against the system libexpat, which the Lambda
+# runtime does not provide, so ship it in lib/ (Lambda puts /opt/lib on
+# LD_LIBRARY_PATH).
+RUN dnf install -y expat \
+    && mkdir -p /layer/lib \
+    && cp -L /usr/lib64/libexpat.so.1 /layer/lib/ \
+    && pip install --no-cache-dir --only-binary=:all: \
         -r /tmp/requirements.txt -t /layer/python \
-    # Trim files that are not needed at runtime to keep the layer small.
-    && find /layer/python -type d \( -name "__pycache__" -o -name "tests" -o -name "test" \) -prune -exec rm -rf {} + \
-    && rm -rf /layer/python/bin \
-    && cd /layer \
-    && python -m zipfile -c /layer.zip python
+    && python3 /tmp/package_layer.py /layer /layer.zip
 
 # Running the container copies the finished zip into the mounted /out directory.
 ENTRYPOINT ["cp", "/layer.zip", "/out/layer.zip"]

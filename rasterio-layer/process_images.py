@@ -5,8 +5,10 @@ Two modes are available:
 * ``lossless`` (default): DEFLATE compression with a predictor. Pixel values are
   preserved exactly, so the output is safe for analysis (e.g. reflectance math).
 * ``jpeg``: 8-bit JPEG compression. Each band is linearly stretched from its
-  min/max to 0-255 first, since JPEG cannot store 16-bit data. Much smaller
-  files, but the original values are lost - use for previews/visualisation only.
+  min/max to 0-255 first, since JPEG cannot store 16-bit data. Nodata is kept
+  in a separate mask rather than as a pixel value, because lossy JPEG would
+  bleed into it. Much smaller files, but the original values are lost - use
+  for previews/visualisation only.
 
 Usage:
     python process_images.py                       # images/ -> images_compressed/
@@ -30,17 +32,28 @@ def find_tiffs(folder):
     return sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in TIFF_SUFFIXES)
 
 
-def scale_to_byte(band, nodata):
-    """Linearly stretch a band to 0-255, keeping 0 reserved for nodata."""
-    valid = band != nodata if nodata is not None else np.ones(band.shape, dtype=bool)
-    if not valid.any():
-        return np.zeros(band.shape, dtype=np.uint8)
+def valid_mask(band, nodata):
+    """True where a pixel holds data: not nodata and, for floats, finite."""
+    valid = np.ones(band.shape, dtype=bool)
+    if np.issubdtype(band.dtype, np.floating):
+        valid &= np.isfinite(band)
+    if nodata is not None and not np.isnan(nodata):
+        valid &= band != nodata
+    return valid
 
-    lo, hi = band[valid].min(), band[valid].max()
+
+def scale_to_byte(band, valid):
+    """Linearly stretch the valid pixels of a band to 0-255."""
     scaled = np.zeros(band.shape, dtype=np.uint8)
+    if not valid.any():
+        return scaled
+
+    values = band[valid].astype(np.float32)
+    lo, hi = values.min(), values.max()
     if hi > lo:
-        stretched = (band[valid].astype(np.float64) - lo) / (hi - lo) * 254 + 1
-        scaled[valid] = np.round(stretched).astype(np.uint8)
+        values -= lo
+        values *= 255 / (hi - lo)
+        scaled[valid] = np.round(values).astype(np.uint8)
     else:
         scaled[valid] = 255
     return scaled
@@ -50,6 +63,9 @@ def compress(src_path, dst_path, mode, quality):
     with rasterio.open(src_path) as src:
         profile = src.profile.copy()
         profile.update(driver="GTiff", tiled=True, blockxsize=512, blockysize=512)
+        # A JPEG-compressed source carries photometric=ycbcr, which is only
+        # valid with JPEG output; let each mode decide.
+        profile.pop("photometric", None)
 
         if mode == "lossless":
             # Predictor 2 (horizontal differencing) suits integers, 3 suits floats.
@@ -60,12 +76,19 @@ def compress(src_path, dst_path, mode, quality):
                     dst.write(src.read(window=window), window=window)
             return
 
-        profile.update(dtype="uint8", compress="jpeg", jpeg_quality=quality, nodata=0)
+        profile.update(dtype="uint8", compress="jpeg", jpeg_quality=quality, nodata=None)
         if src.count == 3:
-            profile.update(photometric="ycbcr")
-        with rasterio.open(dst_path, "w", **profile) as dst:
-            for band_index in range(1, src.count + 1):
-                dst.write(scale_to_byte(src.read(band_index), src.nodata), band_index)
+            profile.update(photometric="ycbcr", interleave="pixel")
+        # Store the mask inside the TIFF instead of a .msk sidecar file.
+        with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True):
+            with rasterio.open(dst_path, "w", **profile) as dst:
+                any_valid = np.zeros((src.height, src.width), dtype=bool)
+                for band_index in range(1, src.count + 1):
+                    band = src.read(band_index)
+                    valid = valid_mask(band, src.nodata)
+                    any_valid |= valid
+                    dst.write(scale_to_byte(band, valid), band_index)
+                dst.write_mask(any_valid)
 
 
 def main(argv=None):
@@ -81,6 +104,9 @@ def main(argv=None):
         parser.error(f"input directory not found: {args.input_dir}")
     if not 1 <= args.quality <= 100:
         parser.error("--quality must be between 1 and 100")
+    if args.output_dir.resolve() == args.input_dir.resolve():
+        # Writing a file while reading it would corrupt the original.
+        parser.error("output directory must differ from the input directory")
 
     tiffs = find_tiffs(args.input_dir)
     if not tiffs:
@@ -96,15 +122,20 @@ def main(argv=None):
         if dst_path.exists() and not args.overwrite:
             print(f"  skip  {src_path.name} (exists; use --overwrite)")
             continue
+        # Write to a temporary name so an interrupted run never leaves a
+        # truncated file that later runs would skip as already done.
+        tmp_path = dst_path.with_name(f".{dst_path.name}.partial")
         try:
-            compress(src_path, dst_path, args.mode, args.quality)
+            compress(src_path, tmp_path, args.mode, args.quality)
+            tmp_path.replace(dst_path)
         except Exception as e:
             failures += 1
-            dst_path.unlink(missing_ok=True)
             print(f"  FAIL  {src_path.name}: {e}")
             continue
-        ratio = src_path.stat().st_size / dst_path.stat().st_size
-        print(f"  ok    {src_path.name} ({ratio:.1f}x smaller)")
+        finally:
+            tmp_path.unlink(missing_ok=True)
+        before, after = src_path.stat().st_size / 1e6, dst_path.stat().st_size / 1e6
+        print(f"  ok    {src_path.name} ({before:.1f} MB -> {after:.1f} MB)")
 
     return 1 if failures else 0
 
