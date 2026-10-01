@@ -1,92 +1,113 @@
-import os
-import glob
-from osgeo import gdal
+"""Compress GeoTIFFs in a folder using rasterio.
 
-def compress_geotiffs(input_folder_name='images', output_folder_name='images_compressed'):
-    """
-    Finds all GeoTIFF files in an input folder, compresses them,
-    and saves them to an output folder. This version is more robust and
-    includes enhanced debugging and path handling.
-    """
-    # --- Robust Path Handling ---
-    # Get the absolute path of the directory where this script is located.
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # Create absolute paths for the input and output folders relative to the script's location.
-    # This ensures the script works regardless of where it's called from.
-    input_folder = os.path.join(script_dir, input_folder_name)
-    output_folder = os.path.join(script_dir, output_folder_name)
+Two modes are available:
 
-    print(f"Script location: {script_dir}")
-    print(f"Searching for images in: {input_folder}")
+* ``lossless`` (default): DEFLATE compression with a predictor. Pixel values are
+  preserved exactly, so the output is safe for analysis (e.g. reflectance math).
+* ``jpeg``: 8-bit JPEG compression. Each band is linearly stretched from its
+  min/max to 0-255 first, since JPEG cannot store 16-bit data. Much smaller
+  files, but the original values are lost - use for previews/visualisation only.
 
-    # --- Enhanced Debugging ---
-    # Check if the input folder actually exists
-    if not os.path.isdir(input_folder):
-        print(f"\n[ERROR] The directory '{input_folder}' was not found.")
-        print("Please ensure a folder named 'images' exists in the same directory as this script.")
-        return
-        
-    # List all contents of the directory to see what the script finds
-    try:
-        directory_contents = os.listdir(input_folder)
-        if not directory_contents:
-            print(f"\nThe '{input_folder}' directory exists, but it is empty.")
-        else:
-            print(f"\nFound the following files/folders in '{input_folder_name}': {directory_contents}")
-    except Exception as e:
-        print(f"Could not read the contents of the '{input_folder}' directory. Reason: {e}")
-        return
+Usage:
+    python process_images.py                       # images/ -> images_compressed/
+    python process_images.py in_dir out_dir --mode jpeg --quality 85
+"""
 
-    # --- Configuration ---
-    # Search for all common TIFF extensions (.tif, .TIF, .tiff)
-    search_patterns = ["*.TIF", "*.tif", "*.tiff"]
-    tif_files = []
-    for pattern in search_patterns:
-        search_path = os.path.join(input_folder, pattern)
-        tif_files.extend(glob.glob(search_path))
+import argparse
+import sys
+from pathlib import Path
 
-    # Exit if no TIF files are found
-    if not tif_files:
-        print(f"\n[ERROR] No files with .tif, .TIF, or .tiff extensions were found in the '{input_folder_name}' directory.")
-        return
+import numpy as np
+import rasterio
 
-    # Create the output directory if it doesn't exist
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-        print(f"Created output directory: {output_folder}")
+SCRIPT_DIR = Path(__file__).resolve().parent
+TIFF_SUFFIXES = {".tif", ".tiff"}
 
-    # --- Compression Options ---
-    # Option 1: Lossless LZW compression (commented out)
-    # translate_options = gdal.TranslateOptions(
-    #     format='GTiff',
-    #     creationOptions=['COMPRESS=LZW', 'TILED=YES']
-    # )
 
-    # Option 2: Lossy JPEG compression with 8-bit scaling
-    # This fixes the "BitsPerSample 16 not allowed" error by converting
-    # the 16-bit data to 8-bit (0-255) before compression.
-    translate_options = gdal.TranslateOptions(
-        format='GTiff',
-        creationOptions=['COMPRESS=JPEG', 'JPEG_QUALITY=85', 'TILED=YES'],
-        outputType=gdal.GDT_Byte,  # Convert output to 8-bit
-        scaleParams=[[]]           # Auto-scale from input min/max to 0-255
-    )
+def find_tiffs(folder):
+    # Match suffixes case-insensitively instead of globbing "*.tif" and "*.TIF"
+    # separately, which returns duplicates on case-insensitive filesystems.
+    return sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in TIFF_SUFFIXES)
 
-    print(f"\nFound {len(tif_files)} files to compress...")
 
-    # --- Processing Loop ---
-    for filepath in tif_files:
-        filename = os.path.basename(filepath)
-        output_filepath = os.path.join(output_folder, filename)
-        print(f"  Compressing '{filename}'...")
+def scale_to_byte(band, nodata):
+    """Linearly stretch a band to 0-255, keeping 0 reserved for nodata."""
+    valid = band != nodata if nodata is not None else np.ones(band.shape, dtype=bool)
+    if not valid.any():
+        return np.zeros(band.shape, dtype=np.uint8)
+
+    lo, hi = band[valid].min(), band[valid].max()
+    scaled = np.zeros(band.shape, dtype=np.uint8)
+    if hi > lo:
+        stretched = (band[valid].astype(np.float64) - lo) / (hi - lo) * 254 + 1
+        scaled[valid] = np.round(stretched).astype(np.uint8)
+    else:
+        scaled[valid] = 255
+    return scaled
+
+
+def compress(src_path, dst_path, mode, quality):
+    with rasterio.open(src_path) as src:
+        profile = src.profile.copy()
+        profile.update(driver="GTiff", tiled=True, blockxsize=512, blockysize=512)
+
+        if mode == "lossless":
+            # Predictor 2 (horizontal differencing) suits integers, 3 suits floats.
+            predictor = 3 if np.issubdtype(np.dtype(src.dtypes[0]), np.floating) else 2
+            profile.update(compress="deflate", predictor=predictor, zlevel=9)
+            with rasterio.open(dst_path, "w", **profile) as dst:
+                for _, window in src.block_windows(1):
+                    dst.write(src.read(window=window), window=window)
+            return
+
+        profile.update(dtype="uint8", compress="jpeg", jpeg_quality=quality, nodata=0)
+        if src.count == 3:
+            profile.update(photometric="ycbcr")
+        with rasterio.open(dst_path, "w", **profile) as dst:
+            for band_index in range(1, src.count + 1):
+                dst.write(scale_to_byte(src.read(band_index), src.nodata), band_index)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("input_dir", nargs="?", type=Path, default=SCRIPT_DIR / "images")
+    parser.add_argument("output_dir", nargs="?", type=Path, default=SCRIPT_DIR / "images_compressed")
+    parser.add_argument("--mode", choices=["lossless", "jpeg"], default="lossless")
+    parser.add_argument("--quality", type=int, default=85, help="JPEG quality, 1-100 (jpeg mode only)")
+    parser.add_argument("--overwrite", action="store_true", help="Replace existing output files")
+    args = parser.parse_args(argv)
+
+    if not args.input_dir.is_dir():
+        parser.error(f"input directory not found: {args.input_dir}")
+    if not 1 <= args.quality <= 100:
+        parser.error("--quality must be between 1 and 100")
+
+    tiffs = find_tiffs(args.input_dir)
+    if not tiffs:
+        print(f"No .tif/.tiff files found in {args.input_dir}")
+        return 1
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Compressing {len(tiffs)} file(s) to {args.output_dir} ({args.mode})")
+
+    failures = 0
+    for src_path in tiffs:
+        dst_path = args.output_dir / src_path.name
+        if dst_path.exists() and not args.overwrite:
+            print(f"  skip  {src_path.name} (exists; use --overwrite)")
+            continue
         try:
-            gdal.Translate(output_filepath, filepath, options=translate_options)
+            compress(src_path, dst_path, args.mode, args.quality)
         except Exception as e:
-            print(f"    [ERROR] Could not process {filename}. Reason: {e}")
+            failures += 1
+            dst_path.unlink(missing_ok=True)
+            print(f"  FAIL  {src_path.name}: {e}")
+            continue
+        ratio = src_path.stat().st_size / dst_path.stat().st_size
+        print(f"  ok    {src_path.name} ({ratio:.1f}x smaller)")
 
-    print(f"\nCompression complete. All processed files saved in '{output_folder}'.")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
-    compress_geotiffs()
+    sys.exit(main())

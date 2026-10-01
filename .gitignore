@@ -1,0 +1,8 @@
+# Build output - regenerate with rasterio-layer/build.sh
+rasterio-layer/opt/
+rasterio-layer/dist/
+rasterio-layer/layer.zip
+
+__pycache__/
+*.pyc
+.venv/
